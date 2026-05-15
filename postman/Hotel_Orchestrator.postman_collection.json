@@ -1,0 +1,255 @@
+{
+  "info": {
+    "name": "Hotel Offer Orchestrator",
+    "_postman_id": "hotel-orchestrator-collection",
+    "description": "API tests for the Hotel Offer Orchestrator service",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            },
+            "description": "Returns health status of both suppliers and Redis"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200 or 207', function() {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 207]);",
+                  "});",
+                  "pm.test('Response has status field', function() {",
+                  "  pm.expect(pm.response.json()).to.have.property('status');",
+                  "});",
+                  "pm.test('Response has services field', function() {",
+                  "  pm.expect(pm.response.json().services).to.have.all.keys('supplierA', 'supplierB', 'redis');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Mock Suppliers",
+      "item": [
+        {
+          "name": "Supplier A - Delhi",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/supplierA/hotels?city=delhi",
+              "host": ["{{baseUrl}}"],
+              "path": ["supplierA", "hotels"],
+              "query": [{ "key": "city", "value": "delhi" }]
+            }
+          }
+        },
+        {
+          "name": "Supplier B - Delhi",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/supplierB/hotels?city=delhi",
+              "host": ["{{baseUrl}}"],
+              "path": ["supplierB", "hotels"],
+              "query": [{ "key": "city", "value": "delhi" }]
+            }
+          }
+        },
+        {
+          "name": "Supplier A - Mumbai",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/supplierA/hotels?city=mumbai",
+              "host": ["{{baseUrl}}"],
+              "path": ["supplierA", "hotels"],
+              "query": [{ "key": "city", "value": "mumbai" }]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Hotels API",
+      "item": [
+        {
+          "name": "1. Get Hotels - Delhi (with overlaps)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/hotels?city=delhi",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "hotels"],
+              "query": [{ "key": "city", "value": "delhi" }]
+            },
+            "description": "Fetches deduplicated best-price hotels for Delhi. Holtin and Radison appear in both suppliers."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', function() { pm.response.to.have.status(200); });",
+                  "pm.test('Returns array', function() {",
+                  "  pm.expect(pm.response.json()).to.be.an('array');",
+                  "});",
+                  "pm.test('Each hotel has required fields', function() {",
+                  "  pm.response.json().forEach(h => {",
+                  "    pm.expect(h).to.have.all.keys('name','price','supplier','commissionPct');",
+                  "  });",
+                  "});",
+                  "pm.test('Holtin has cheaper price (Supplier B = 5340)', function() {",
+                  "  const holtin = pm.response.json().find(h => h.name === 'Holtin');",
+                  "  if (holtin) pm.expect(holtin.price).to.equal(5340);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2. Get Hotels - Delhi Price Filter (min 6000, max 10000)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/hotels?city=delhi&minPrice=6000&maxPrice=10000",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "hotels"],
+              "query": [
+                { "key": "city", "value": "delhi" },
+                { "key": "minPrice", "value": "6000" },
+                { "key": "maxPrice", "value": "10000" }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', function() { pm.response.to.have.status(200); });",
+                  "pm.test('All prices within range', function() {",
+                  "  pm.response.json().forEach(h => {",
+                  "    pm.expect(h.price).to.be.at.least(6000);",
+                  "    pm.expect(h.price).to.be.at.most(10000);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3. Get Hotels - Delhi minPrice only (min 8000)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/hotels?city=delhi&minPrice=8000",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "hotels"],
+              "query": [
+                { "key": "city", "value": "delhi" },
+                { "key": "minPrice", "value": "8000" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "4. Get Hotels - Mumbai",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/hotels?city=mumbai",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "hotels"],
+              "query": [{ "key": "city", "value": "mumbai" }]
+            }
+          }
+        },
+        {
+          "name": "5. Get Hotels - Bangalore",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/hotels?city=bangalore",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "hotels"],
+              "query": [{ "key": "city", "value": "bangalore" }]
+            }
+          }
+        },
+        {
+          "name": "6. Get Hotels - City With No Results",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/hotels?city=goa",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "hotels"],
+              "query": [{ "key": "city", "value": "goa" }]
+            },
+            "description": "City with no results - should return empty array"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', function() { pm.response.to.have.status(200); });",
+                  "pm.test('Returns empty array', function() {",
+                  "  pm.expect(pm.response.json()).to.be.an('array').that.is.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "7. Missing City Parameter (400 error)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/hotels",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "hotels"]
+            },
+            "description": "Should return 400 when city param is missing"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', function() { pm.response.to.have.status(400); });",
+                  "pm.test('Error message present', function() {",
+                  "  pm.expect(pm.response.json()).to.have.property('error');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
