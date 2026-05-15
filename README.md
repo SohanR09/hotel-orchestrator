@@ -23,7 +23,7 @@ Follow the steps below in order. The client UI must be built before starting the
 
 ```bash
 git clone https://github.com/SohanR09/hotel-orchestrator.git
-cd hotel-offer-orchestrator
+cd hotel-orchestrator
 ```
 
 ### Step 2 — Install & Build the Client
