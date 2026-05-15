@@ -22,7 +22,7 @@ Follow the steps below in order. The client UI must be built before starting the
 ### Step 1 — Clone the Repository
 
 ```bash
-git clone https://github.com/your-username/hotel-offer-orchestrator.git
+git clone https://github.com/SohanR09/hotel-orchestrator.git
 cd hotel-offer-orchestrator
 ```
 
