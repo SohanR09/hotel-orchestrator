@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { v4 as uuidv4 } from 'uuid';
 import { logger } from '../middleware/logger';
 import { BestOffer } from '../types';
 import * as activities from '../temporal/activities';
@@ -6,7 +7,11 @@ import {
   saveHotelsToRedis,
   filterHotelsByPriceFromRedis,
   isRedisAvailable,
+  getHotelsFromRedis,
 } from '../redis/client';
+import { get } from 'http';
+import { getTemporalClient } from '../temporal/client';
+import { hotelAggregationWorkflow } from '../temporal/workflow';
 
 export const hotelsRouter = Router();
 
@@ -34,7 +39,7 @@ hotelsRouter.get('/', async (req: Request, res: Response) => {
     const hasPriceFilter = minPrice !== undefined || maxPrice !== undefined;
     const redisOk = await isRedisAvailable();
 
-    // If Redis is up and we have a price filter, try cache first
+    // ── 1. Redis cache hit with price filter ──────────────────
     if (redisOk && hasPriceFilter) {
       const cached = await filterHotelsByPriceFromRedis(city, minPrice, maxPrice);
       if (cached !== null) {
@@ -43,16 +48,51 @@ hotelsRouter.get('/', async (req: Request, res: Response) => {
       }
     }
 
-    // Fetch and deduplicate (direct, no Temporal required)
-    const bestOffers: BestOffer[] = await fetchAndDedup(city);
-    logger.info(`[API] Fetched ${bestOffers.length} hotels for city="${city}"`);
+    // // Fetch and deduplicate (direct, no Temporal required)
+    // const bestOffers: BestOffer[] = await fetchAndDedup(city);
+    // logger.info(`[API] Fetched ${bestOffers.length} hotels for city="${city}"`);
 
-    // Save to Redis if available
+    // ── 2. Redis cache hit (no filter) ────────────────────────
+    if (redisOk && !hasPriceFilter) {
+      const chached = await getHotelsFromRedis(city);
+      if (chached !== null) {
+        logger.info(`[API] Redis cache hit: ${chached.length} hotels`);
+        return res.json(chached);
+      }
+    }
+
+    // ── 3. Run via Temporal workflow ──────────────────────────
+    let bestOffers: BestOffer[] = [];
+    try {
+       logger.info('[API] Starting Temporal workflow...');
+      const client     = await getTemporalClient();
+      const workflowId = `hotel-${city}-${uuidv4()}`;
+
+      const handle = await client.workflow.start(hotelAggregationWorkflow, {
+        args: [city],
+        taskQueue: 'hotel-task-queue',
+        workflowId,
+      });
+
+      bestOffers = await handle.result();
+      logger.info(`[API] Temporal workflow done: ${bestOffers.length} hotels (id: ${workflowId})`);
+    } catch (temporalErr: any) {
+      // ── 4. Fallback: run activities directly ─────────────────
+      logger.warn(`[API] Temporal unavailable (${temporalErr.message}) — running directly`);
+      const [a, b] = await Promise.all([
+        activities.fetchSupplierA(city),
+        activities.fetchSupplierB(city),
+      ]);
+      bestOffers = await activities.deduplicateAndSelectBest(a, b);
+      logger.info(`[API] Direct execution: ${bestOffers.length} hotels`);
+    }
+
+    // ── 5. Save to Redis ──────────────────────────────────────
     if (redisOk) {
       await saveHotelsToRedis(city, bestOffers);
     }
 
-    // Apply price filter
+    // ── 6. Apply price filter ─────────────────────────────────
     let result = bestOffers;
     if (hasPriceFilter) {
       if (minPrice !== undefined) result = result.filter((h) => h.price >= minPrice);

@@ -12,16 +12,21 @@ async function run() {
     address: temporalAddress,
   });
 
+  // __dirname at runtime = dist/temporal/
+  // project root         = dist/temporal/../../  = project root
+  // workflow source      = project root + src/temporal/workflow.ts
+  const workflowsPath = path.resolve(__dirname, '..', '..', 'src', 'temporal', 'workflow.ts');
+  logger.info(`[Worker] Workflows path: ${workflowsPath}`);
+
   const worker = await Worker.create({
     connection,
     namespace: 'default',
     taskQueue: 'hotel-task-queue',
-    workflowsPath: path.join(__dirname, 'workflow'),
+    workflowsPath,
     activities,
   });
 
-  logger.info('[Worker] Hotel Temporal Worker started, listening on task queue: hotel-task-queue');
-
+  logger.info('[Worker] Started — listening on task queue: hotel-task-queue');
   await worker.run();
 }
 
