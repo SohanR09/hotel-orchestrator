@@ -1,6 +1,6 @@
 # Hotel Offer Orchestrator
 
-A production-ready REST API built with **Node.js**, **TypeScript**, **Redis**, and **Express** that aggregates hotel offers from multiple suppliers, deduplicates by hotel name, and returns the best-priced offer per hotel with optional price-range filtering. Includes a client UI for interactive testing.
+A production-ready REST API built with **Node.js**, **TypeScript**, **Redis**, **Temporal**, and **Express** that aggregates hotel offers from multiple suppliers, deduplicates by hotel name, and returns the best-priced offer per hotel with optional price-range filtering. Includes a full React + Material UI client for interactive testing.
 
 ---
 
@@ -10,8 +10,9 @@ A production-ready REST API built with **Node.js**, **TypeScript**, **Redis**, a
 - **Git** — https://git-scm.com
 - **Redis for Windows** — Memurai: https://www.memurai.com/get-memurai
 - **Redis for macOS** — via Homebrew: https://brew.sh
+- **Temporal CLI** — https://github.com/temporalio/cli/releases
 
-> Redis must be installed before running the server. See the [Redis Setup](#redis-setup) section below for instructions per OS.
+> Both Redis and Temporal must be installed and running before starting the server. See the [Redis Setup](#redis-setup) and [Temporal Setup](#temporal-setup) sections below.
 
 ---
 
@@ -31,132 +32,251 @@ cd hotel-orchestrator
 Navigate into the `client` folder and run the installer:
 
 **Windows**
+
 ```cmd
 cd client
 install-and-build.bat
 ```
 
 **macOS / Linux**
+
 ```bash
 cd client
 chmod +x install-and-build.sh
 ./install-and-build.sh
 ```
 
-This installs all client dependencies and produces a production build served by the API server.
+This installs all client dependencies and produces a production build in `client/build/` which the API server serves automatically.
 
 ### Step 3 — Install & Build the Server
 
-Go back to the project root and run the server installer:
+Go back to the project root:
 
 **Windows**
+
 ```cmd
 cd ..
 install.bat
 ```
 
 **macOS / Linux**
+
 ```bash
 cd ..
 chmod +x install.sh
 ./install.sh
 ```
 
-This installs all server npm packages and compiles the TypeScript source into `dist/`.
+This installs all server npm packages and compiles TypeScript into `dist/`.
 
-### Step 4 — Start the Server
+### Step 4 — Start Temporal Server + Worker
+
+Temporal must be running before the API server starts. Open a dedicated terminal window and run:
 
 **Windows**
+
+```cmd
+start-worker.bat
+```
+
+**macOS / Linux**
+
+```bash
+chmod +x start-worker.sh
+./start-worker.sh
+```
+
+This single script:
+
+1. Starts the Temporal dev server on port `7233` in a background window
+2. Waits 5 seconds for it to be ready
+3. Starts the Temporal worker in the foreground — listens on `hotel-task-queue`
+
+You should see:
+
+```
+[Worker] Connecting to Temporal at localhost:7233
+[Worker] Started — listening on task queue: hotel-task-queue
+```
+
+### Step 5 — Start the API Server
+
+Open a new terminal window and run:
+
+**Windows**
+
 ```cmd
 start.bat
 ```
 
 **macOS / Linux**
+
 ```bash
 chmod +x start.sh
 ./start.sh
 ```
 
-The server will start at **http://localhost:3000**
-
-The start script automatically:
-- Detects your operating system
-- Checks and starts Redis / Memurai
-- Installs dependencies if not already present
-- Builds the project
-- Launches the API server
+Open your browser at **http://localhost:3000** — the full UI will load.
 
 ---
 
 ## Redis Setup
 
-Redis is required for caching. Install it once for your OS — the start script manages it automatically on subsequent runs.
+Redis is required for caching. The server will not start correctly without a running Redis instance.
 
 ### Windows — Memurai
 
-1. Download the free Developer edition from https://www.memurai.com/get-memurai
-2. Run the installer — Memurai registers itself as a Windows service and starts automatically
-3. Verify it is working:
+1. Download the free Developer edition (LTS) from https://www.memurai.com/get-memurai
+2. Run the installer — Memurai registers as a Windows service and starts automatically
+3. Verify:
+
 ```cmd
 memurai-cli ping
 ```
-Expected response: `PONG`
+
+Expected: `PONG`
 
 ### macOS — Homebrew
 
-1. Install Homebrew if not already installed:
-```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-```
-2. Install and start Redis:
 ```bash
 brew install redis
 brew services start redis
-```
-3. Verify it is working:
-```bash
 redis-cli ping
 ```
-Expected response: `PONG`
+
+Expected: `PONG`
 
 ### Linux
 
 ```bash
 sudo apt update && sudo apt install redis-server -y
 sudo service redis-server start
-```
-
-Verify:
-```bash
 redis-cli ping
 ```
-Expected response: `PONG`
+
+Expected: `PONG`
+
+---
+
+## Temporal Setup
+
+Temporal is required for workflow orchestration. It runs supplier calls in parallel with automatic retry. The server will not start correctly without a running Temporal instance.
+
+### Step 1 — Install Temporal CLI
+
+**Windows**
+
+```cmd
+winget install Temporal.tctl
+```
+
+Or download the binary from https://github.com/temporalio/cli/releases — extract and add to your PATH.
+
+**macOS — Homebrew**
+
+```bash
+brew install temporal
+```
+
+**Linux**
+
+Download the binary from https://github.com/temporalio/cli/releases, extract it, and add it to your PATH.
+
+Verify the installation:
+
+```bash
+temporal --version
+```
+
+### Step 2 — Configure Environment
+
+Copy `.env.example` to `.env` and ensure the following is set:
+
+```dotenv
+USE_TEMPORAL=true
+```
+
+### Step 3 — Start Temporal Server + Worker
+
+Open a dedicated terminal and run:
+
+**Windows**
+
+```cmd
+start-worker.bat
+```
+
+**macOS / Linux**
+
+```bash
+./start-worker.sh
+```
+
+**Temporal UI** — http://localhost:8080 — shows live workflow executions once the server is running.
+
+---
+
+## How It Works
+
+### Request flow
+
+1. `GET /api/hotels?city=delhi` hits the Express route
+2. Redis is checked — if cached, returns instantly (under 1ms)
+3. On cache miss, a Temporal workflow is started with a unique `workflowId`
+4. The workflow calls `fetchSupplierA` and `fetchSupplierB` in parallel via `Promise.all`
+5. Each activity has automatic retry (up to 3 times with exponential backoff)
+6. Results are deduplicated — the cheaper price wins for overlapping hotels
+7. Final list is saved to Redis with a 5-minute TTL
+8. Response is returned to the client
+
+### What you will see (on API call)
+
+**Worker window:**
+
+```
+[Worker] Connecting to Temporal at localhost:7233
+[Worker] Started — listening on task queue: hotel-task-queue
+```
+
+**Server window:**
+
+```
+[API] Starting Temporal workflow...
+[Temporal Client] Connected successfully
+[API] Temporal workflow done: 7 hotels (id: hotel-delhi-xxxx)
+[Redis] Cached 7 hotels for "delhi"
+```
+
+### Caching
+
+- Cache key: `hotels:{city}` (e.g. `hotels:delhi`)
+- TTL: 300 seconds (5 minutes) — configurable via `CACHE_TTL`
+- Price filtering reads from the cache and filters in memory — no extra supplier calls
 
 ---
 
 ## Testing the API
 
-There are two ways to test the API:
-
 ### Option 1 — Client UI
 
-Once the server is running, open your browser and go to:
+Open **http://localhost:3000** in your browser. The UI provides:
 
+- **Hotels page** — search by city, apply min/max price filters, view deduplicated results ranked by price
+- **Suppliers page** — side-by-side raw data from Supplier A and B, overlap detection
+- **Health page** — live status of Supplier A, Supplier B, and Redis with latency, auto-refresh
+- **Docs page** — this README rendered from the server at `/docs/readme`
+
+### Option 2 — Postman
+
+Import `postman/Hotel_Orchestrator.postman_collection.json`. Includes pre-written tests for all endpoints.
+
+### Option 3 — Direct HTTP
+
+```bash
+curl http://localhost:3000/api/hotels?city=delhi
+curl http://localhost:3000/api/hotels?city=delhi&minPrice=5000&maxPrice=9000
+curl http://localhost:3000/health
 ```
-http://localhost:3000
-```
-
-The UI allows you to:
-- Select a city and apply price filters
-- View deduplicated hotel results in a clean interface
-- Check supplier responses individually
-- Monitor cache and health status
-
-### Option 2 — Manual API Testing
-
-Use a browser, Postman, or any HTTP client to call the endpoints directly. See the [API Endpoints](#api-endpoints) section below.
-
-You can also import `postman/Hotel_Orchestrator.postman_collection.json` into Postman to run the full test suite.
 
 ---
 
@@ -164,19 +284,26 @@ You can also import `postman/Hotel_Orchestrator.postman_collection.json` into Po
 
 ### Hotels
 
-- `GET /api/hotels?city=delhi` — Best-priced hotels for a city
-- `GET /api/hotels?city=delhi&minPrice=5000&maxPrice=9000` — Price-filtered hotels
+| Method | Endpoint                                             | Description                                |
+| ------ | ---------------------------------------------------- | ------------------------------------------ |
+| GET    | `/api/hotels?city=delhi`                             | Best-priced deduplicated hotels for a city |
+| GET    | `/api/hotels?city=delhi&minPrice=5000&maxPrice=9000` | Price-filtered hotels                      |
 
 ### Suppliers
 
-- `GET /supplierA/hotels` — Raw Supplier A data (all cities)
-- `GET /supplierA/hotels?city=delhi` — Supplier A data filtered by city
-- `GET /supplierB/hotels` — Raw Supplier B data (all cities)
-- `GET /supplierB/hotels?city=delhi` — Supplier B data filtered by city
+| Method | Endpoint                       | Description                      |
+| ------ | ------------------------------ | -------------------------------- |
+| GET    | `/supplierA/hotels`            | Raw Supplier A data (all cities) |
+| GET    | `/supplierA/hotels?city=delhi` | Supplier A filtered by city      |
+| GET    | `/supplierB/hotels`            | Raw Supplier B data (all cities) |
+| GET    | `/supplierB/hotels?city=delhi` | Supplier B filtered by city      |
 
-### Health
+### Health & Docs
 
-- `GET /health` — Health status of suppliers and Redis cache
+| Method | Endpoint       | Description                                               |
+| ------ | -------------- | --------------------------------------------------------- |
+| GET    | `/health`      | Health status of suppliers, Redis, and Temporal           |
+| GET    | `/docs/readme` | Server README.md as plain text (used by client Docs page) |
 
 **Available cities:** `delhi`, `mumbai`, `bangalore`
 
@@ -184,92 +311,128 @@ You can also import `postman/Hotel_Orchestrator.postman_collection.json` into Po
 
 ```json
 [
-  { "name": "Park Hotel",   "price": 4800,  "supplier": "Supplier B", "commissionPct": 9  },
-  { "name": "Holtin",       "price": 5340,  "supplier": "Supplier B", "commissionPct": 20 },
-  { "name": "Radison",      "price": 5900,  "supplier": "Supplier A", "commissionPct": 13 },
-  { "name": "Crowne Plaza", "price": 6800,  "supplier": "Supplier B", "commissionPct": 14 },
-  { "name": "The Lalit",    "price": 7200,  "supplier": "Supplier A", "commissionPct": 11 },
-  { "name": "ITC Maurya",   "price": 9500,  "supplier": "Supplier A", "commissionPct": 12 },
-  { "name": "Grand Hyatt",  "price": 11500, "supplier": "Supplier B", "commissionPct": 18 }
+  {
+    "name": "Park Hotel",
+    "price": 4800,
+    "supplier": "Supplier B",
+    "commissionPct": 9
+  },
+  {
+    "name": "Holtin",
+    "price": 5340,
+    "supplier": "Supplier B",
+    "commissionPct": 20
+  },
+  {
+    "name": "Radison",
+    "price": 5900,
+    "supplier": "Supplier A",
+    "commissionPct": 13
+  },
+  {
+    "name": "Crowne Plaza",
+    "price": 6800,
+    "supplier": "Supplier B",
+    "commissionPct": 14
+  },
+  {
+    "name": "The Lalit",
+    "price": 7200,
+    "supplier": "Supplier A",
+    "commissionPct": 11
+  },
+  {
+    "name": "ITC Maurya",
+    "price": 9500,
+    "supplier": "Supplier A",
+    "commissionPct": 12
+  },
+  {
+    "name": "Grand Hyatt",
+    "price": 11500,
+    "supplier": "Supplier B",
+    "commissionPct": 18
+  }
 ]
 ```
 
-Hotels appearing in both suppliers are automatically deduplicated — the cheaper offer is returned.
-
----
-
-## Caching
-
-Results are cached in Redis for 5 minutes. On a cache hit, the response is served instantly without calling the suppliers again. The `/health` endpoint reports live cache connectivity status.
+Hotels present in both suppliers are automatically deduplicated — the cheaper offer is returned.
 
 ---
 
 ## Environment Variables
 
-### Server
-
 Copy `.env.example` to `.env` to override defaults:
 
-- `PORT` — API server port (default: `3000`)
-- `REDIS_URL` — Redis connection URL (default: `redis://localhost:6379`)
-- `CACHE_TTL` — Cache time-to-live in seconds (default: `300`)
-- `BASE_URL` — Base URL for internal supplier calls (default: `http://localhost:3000`)
-- `USE_TEMPORAL` — Set `true` if a Temporal server is running (default: `false`)
-- `LOG_LEVEL` — Winston log level (default: `info`)
+| Variable           | Default                  | Description                                          |
+| ------------------ | ------------------------ | ---------------------------------------------------- |
+| `PORT`             | `3000`                   | API server port                                      |
+| `REDIS_URL`        | `redis://localhost:6379` | Redis connection URL                                 |
+| `CACHE_TTL`        | `300`                    | Cache TTL in seconds                                 |
+| `BASE_URL`         | `http://localhost:3000`  | Internal URL for supplier activity calls             |
+| `USE_TEMPORAL`     | `true`                   | Must be `true` — Temporal is required                |
+| `TEMPORAL_ADDRESS` | `localhost:7233`          | Temporal server address                              |
+| `LOG_LEVEL`        | `info`                   | Winston log level (`debug`, `info`, `warn`, `error`) |
 
-### Client
+### Client environment (`client/.env`)
 
-The `client/.env` file is pre-configured with the following values — no changes are required:
+Pre-configured — no changes needed:
 
 ```dotenv
 SKIP_PREFLIGHT_CHECK=true
 GENERATE_SOURCEMAP=false
 ```
 
-- `SKIP_PREFLIGHT_CHECK` — Bypasses the Create React App dependency version check, which may conflict with the server's `node_modules`
-- `GENERATE_SOURCEMAP` — Disabled to reduce build size and avoid exposing source code in production
-
 ---
 
 ## Project Structure
 
 ```
-client/
-├── src/                        Client UI source
-├── build/                      Production build (served by server)
-└── install-and-build.bat       Client installer (Windows)
-
-src/
-├── index.ts                    Entry point — Express app setup
-├── types.ts                    Shared TypeScript interfaces
-├── routes/
-│   ├── hotels.ts               GET /api/hotels
-│   └── health.ts               GET /health
-├── suppliers/
-│   ├── supplierA.ts            Mock Supplier A
-│   └── supplierB.ts            Mock Supplier B
-├── temporal/
-│   ├── activities.ts           Fetch + deduplication logic
-│   ├── workflow.ts             Temporal workflow definition
-│   ├── worker.ts               Temporal worker (optional)
-│   └── client.ts               Temporal client (optional)
-├── redis/
-│   └── client.ts               Redis cache helpers
-└── middleware/
-    └── logger.ts               Winston request logging
+hotel-orchestrator/
+├── src/
+│   ├── index.ts                Entry point — serves API + React build + /docs/readme
+│   ├── types.ts                Shared TypeScript interfaces
+│   ├── routes/
+│   │   ├── hotels.ts           GET /api/hotels — Temporal + Redis
+│   │   └── health.ts           GET /health — supplier, Redis, and Temporal status
+│   ├── suppliers/
+│   │   ├── supplierA.ts        Mock Supplier A (delhi, mumbai, bangalore)
+│   │   └── supplierB.ts        Mock Supplier B (overlapping hotel names)
+│   ├── temporal/
+│   │   ├── activities.ts       fetchSupplierA, fetchSupplierB, deduplicateAndSelectBest
+│   │   ├── workflow.ts         hotelAggregationWorkflow — parallel + dedup
+│   │   ├── worker.ts           Temporal worker — listens on hotel-task-queue
+│   │   └── client.ts           Temporal client singleton
+│   ├── redis/
+│   │   └── client.ts           Cache save, get, filter, health check
+│   └── middleware/
+│       └── logger.ts           Winston structured logging
+├── client/
+│   ├── src/
+│   │   ├── pages/              Hotels, Suppliers, Health, Docs
+│   │   ├── components/         Navbar
+│   │   ├── hooks/useApi.ts     All API calls
+│   │   └── types.ts            Shared interfaces
+│   └── build/                  Production build (served by Express)
+├── postman/
+│   └── Hotel_Orchestrator.postman_collection.json
+├── install.bat                 Server: install + build (Windows, first time)
+├── start.bat                   Start the API server (Windows)
+├── start-worker.bat            Start Temporal dev server + worker together (Windows)
+├── .env.example                Environment variable template
+└── README.md
 ```
 
 ---
 
-## Postman Collection
+## Windows Bat File Reference
 
-Import `postman/Hotel_Orchestrator.postman_collection.json` into Postman to run the full test suite, including:
-
-- Delhi hotels with deduplication validation
-- Price range filtering
-- Empty result for a city with no hotels — returns `[]`
-- Missing city parameter — returns `400` error
-- Health check
+| File               | Purpose                                                                 |
+| ------------------ | ----------------------------------------------------------------------- |
+| `install.bat`      | First-time install — installs server npm packages + compiles TypeScript |
+| `build.bat`        | Rebuild after code changes — recompiles server + rebuilds React client  |
+| `start.bat`        | Start the API server                                                    |
+| `start-worker.bat` | Start Temporal dev server + worker together (**must run before API**)   |
 
 ---
 
@@ -285,8 +448,11 @@ node dist/index.js
 
 # Client
 cd client
-npm install
-npm run build
+npm install --legacy-peer-deps
+node_modules/.bin/react-scripts build
+
+# Temporal worker (run in a separate terminal before the API server)
+npx ts-node src/temporal/worker.ts
 ```
 
 ---
@@ -294,25 +460,12 @@ npm run build
 ## Git Workflow
 
 ```bash
-# Check status
 git status
-
-# Stage all changes
 git add .
-
-# Commit
-git commit -m "your message here"
-
-# Push to remote
+git commit -m "your message"
 git push origin main
-
-# Pull latest changes
 git pull origin main
-
-# Create and switch to a new branch
 git checkout -b feature/your-feature-name
-
-# Merge a branch into main
 git checkout main
 git merge feature/your-feature-name
 ```
