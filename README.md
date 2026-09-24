@@ -2,6 +2,7 @@
 
 A production-ready REST API built with **Node.js**, **TypeScript**, **Redis**, **Temporal**, and **Express** that aggregates hotel offers from multiple suppliers, deduplicates by hotel name, and returns the best-priced offer per hotel with optional price-range filtering. Includes a full React + Material UI client for interactive testing.
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/SohanR09/hotel-orchestrator)
 ---
 
 ## Requirements
